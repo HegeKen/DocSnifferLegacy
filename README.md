@@ -111,6 +111,8 @@ DocSnifferLegacy/
 
 > 注意：GUI 子系统须在 `src/main.rs` 声明 `#![windows_subsystem = "windows"]`，否则 MSVC 链接器会因入口点不匹配而报 `LNK2019: 无法解析的外部符号 WinMain`。`config.toml` 中的 `-SUBSYSTEM:WINDOWS` 仅负责锁定兼容的 Windows 版本号。
 
+> **重要（Win7/XP 兼容）**：MSVC（VS2017+ / Windows SDK 10）编译的产物会引用 `api-ms-win-*.dll`（API-Set 转发库）。`+crt-static` 只能免掉 VC++ 运行库，**免不掉**这套 API-Set；而它们（如 `api-ms-win-core-libraryloader-l1-2-0.dll`）由 Universal CRT 补丁 **KB2999226** 引入，Win7/XP 默认不存在。因此**追求 XP/Win7 免依赖运行，应优先选择 GNU（MinGW-w64）工具链**——它直接链接 `kernel32/user32/gdi32`，不引入 API-Set，无此问题。
+
 ```toml
 [target.i686-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-SUBSYSTEM:WINDOWS,5.01"]
@@ -131,14 +133,20 @@ linker = "x86_64-w64-mingw32-gcc"
 ### 6.2 构建命令
 
 ```bash
-# 编译 32 位静态单文件（推荐 XP 使用）
-cargo build --release --target i686-pc-windows-msvc
+# ---- 推荐：GNU（MinGW-w64）工具链，免 UCRT/API-Set，最适合 XP/Win7 免依赖运行 ----
+# 需要先：rustup target add x86_64-pc-windows-gnu 并安装 mingw-w64
+cargo build --release --target x86_64-pc-windows-gnu   # 64 位（Win7 64 位）
 
-# 编译 64 位静态单文件（Win7 64 位使用）
-cargo build --release --target x86_64-pc-windows-msvc
+# 32 位（XP/Vista 及 32 位 Win7）
+rustup target add i686-pc-windows-gnu
+cargo build --release --target i686-pc-windows-gnu
+
+# ---- 备选：MSVC 工具链（需目标机器安装 KB2999226 / KB3118401 才能在 Win7/XP 运行）----
+cargo build --release --target i686-pc-windows-msvc    # 32 位
+cargo build --release --target x86_64-pc-windows-msvc  # 64 位
 ```
 
-产物（`docsniffer_legacy.exe`）直接位于 target 目录，**无需** 安装 Visual C++ Redistributable，可在纯净系统上双击运行。如需进一步压缩，可选用 **UPX** 二次压缩（可选，不影响运行）。
+产物（`docsniffer_legacy.exe`）直接位于 target 目录，**无需** 安装 Visual C++ Redistributable。若用 GNU 工具链构建，同时在纯净 XP/Win7 上可直接双击运行；若用 MSVC 构建，Win7/XP 需先安装 UCRT 补丁（KB2999226 或 KB3118401）才能运行，否则会提示缺失 `api-ms-win-*.dll`。如需进一步压缩，可选用 **UPX** 二次压缩（可选，不影响运行）。
 
 ---
 
