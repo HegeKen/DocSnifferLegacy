@@ -53,9 +53,42 @@ pub struct DocSnifferApp {
     status: String,
 }
 
+/// 尝试加载系统中文字体并注册为 egui 后备字体，避免中文显示为方框（tofu）。
+/// 依次尝试常见中文系统字体，读取首个存在的字体文件；全部失败则保持默认（仅拉丁）。
+fn setup_cjk_fonts(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "C:\\Windows\\Fonts\\msyh.ttc",   // 微软雅黑（Vista+）
+        "C:\\Windows\\Fonts\\simsun.ttc", // 宋体（XP+）
+        "C:\\Windows\\Fonts\\simhei.ttf", // 黑体
+        "C:\\Windows\\Fonts\\simfang.ttf",// 仿宋
+        "C:\\Windows\\Fonts\\simkai.ttf", // 楷体
+    ];
+    let mut bytes: Option<Vec<u8>> = None;
+    for p in CANDIDATES {
+        if let Ok(b) = std::fs::read(p) {
+            bytes = Some(b);
+            break;
+        }
+    }
+    let Some(bytes) = bytes else { return };
+
+    let mut fonts = egui::FontDefinitions::default();
+    // 作为后备字体追加到各字体族末尾：拉丁沿用默认，中文由 CJK 字体补全。
+    fonts
+        .font_data
+        .insert("cjk".to_owned(), egui::FontData::from_owned(bytes));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        if let Some(list) = fonts.families.get_mut(&family) {
+            list.push("cjk".to_owned());
+        }
+    }
+    ctx.set_fonts(fonts);
+}
+
 impl DocSnifferApp {
     pub fn new(cc: &eframe::CreationContext<'_>, data_dir: PathBuf, settings: Settings) -> Self {
         cc.egui_ctx.set_visuals(theme_visuals(settings.theme));
+        setup_cjk_fonts(&cc.egui_ctx);
         let rules = rules::load_rules(&data_dir);
         Self {
             data_dir,
