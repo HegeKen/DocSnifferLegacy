@@ -3,17 +3,26 @@
 
 # ---- 32 位（Windows XP SP2+ / Vista / 7-32）----
 [target.i686-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-SUBSYSTEM:WINDOWS,5.01"]
+rustflags = ["-C", "target-feature=+crt-static"]
 
 # ---- 64 位（Win7-64 / Vista-64）----
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-SUBSYSTEM:WINDOWS,5.02"]
+rustflags = ["-C", "target-feature=+crt-static"]
 
 # ---- GNU 工具链（免 VC++ 环境时使用）----
+# 使用 MSYS2 的 mingw-w64 工具链。为了不依赖各终端 PATH 的差异（否则 cc-rs 会
+# 拿到错误的 gcc.exe 导致空 stderr + exit 1），CC/CXX/AR 均用绝对路径固定。
 [target.i686-pc-windows-gnu]
 rustflags = ["-C", "target-feature=+crt-static"]
 linker = "i686-w64-mingw32-gcc"
 
 [target.x86_64-pc-windows-gnu]
 rustflags = ["-C", "target-feature=+crt-static"]
-linker = "x86_64-w64-mingw32-gcc"
+linker = "C:\\msys64\\mingw64\\bin\\x86_64-w64-mingw32-gcc.exe"
+
+# 固定 build script（cc-rs，用于编译 zstd-sys 等 C 依赖）使用的编译器。
+# 仅对 gnu 目标生效；其他目标（msvc）不受影响。
+[env]
+CC_x86_64_pc_windows_gnu = "C:\\msys64\\mingw64\\bin\\gcc.exe"
+CXX_x86_64_pc_windows_gnu = "C:\\msys64\\mingw64\\bin\\g++.exe"
+AR_x86_64_pc_windows_gnu = "C:\\msys64\\mingw64\\bin\\ar.exe"
