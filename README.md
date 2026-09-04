@@ -107,6 +107,8 @@ DocSnifferLegacy/
 
 针对旧系统，编译时必须锁定 **静态 CRT 链接** 与兼容的 API 版本：
 
+> 注意：GUI 子系统须在 `src/main.rs` 声明 `#![windows_subsystem = "windows"]`，否则 MSVC 链接器会因入口点不匹配而报 `LNK2019: 无法解析的外部符号 WinMain`。`config.toml` 中的 `-SUBSYSTEM:WINDOWS` 仅负责锁定兼容的 Windows 版本号。
+
 ```toml
 [target.i686-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-SUBSYSTEM:WINDOWS,5.01"]

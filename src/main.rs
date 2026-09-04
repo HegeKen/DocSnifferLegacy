@@ -8,6 +8,9 @@
 //!
 //! 引擎与界面统一复用 `docsniffer_legacy` crate 的各模块，保证 GUI 与 CLI 行为一致。
 
+// 声明 GUI 子系统：隐藏控制台窗口，并让 MSVC 链接器使用正确的入口点（否则会报 LNK2019 WinMain 未解析）。
+#![windows_subsystem = "windows"]
+
 use docsniffer_legacy::app::DocSnifferApp;
 use docsniffer_legacy::cli;
 use docsniffer_legacy::config;
