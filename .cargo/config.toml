@@ -1,0 +1,19 @@
+# DocSniffer Legacy —— 面向 Windows 低版本系统的静态链接配置
+# 说明：以下 rustflags 仅作用于对应 target，本机(非 Windows)构建不受影响。
+
+# ---- 32 位（Windows XP SP2+ / Vista / 7-32）----
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-SUBSYSTEM:WINDOWS,5.01"]
+
+# ---- 64 位（Win7-64 / Vista-64）----
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-SUBSYSTEM:WINDOWS,5.02"]
+
+# ---- GNU 工具链（免 VC++ 环境时使用）----
+[target.i686-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+linker = "i686-w64-mingw32-gcc"
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+linker = "x86_64-w64-mingw32-gcc"

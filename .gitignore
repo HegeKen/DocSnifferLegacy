@@ -1,0 +1,11 @@
+# Build artifacts
+/target
+
+# Data / portable mode output
+/Data
+/PORTABLE.flag.report
+*.csv
+*.json.report
+
+# Mac
+.DS_Store
