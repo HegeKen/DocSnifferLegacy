@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net40</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>DocSnifferLegacy.Tests</RootNamespace>
+    <AssemblyName>DocSnifferLegacy.Tests</AssemblyName>
+    <StartupObject>DocSnifferLegacy.Tests.TestMain</StartupObject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DocSnifferLegacy.Core\DocSnifferLegacy.Core.csproj" />
+  </ItemGroup>
+
+</Project>

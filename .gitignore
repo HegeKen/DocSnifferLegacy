@@ -1,11 +1,21 @@
-# Build artifacts
-/target
+# .NET 构建产物（含单文件 publish 输出）
+[Bb]in/
+[Oo]bj/
 
-# Data / portable mode output
-/Data
-/PORTABLE.flag.report
-*.csv
-*.json.report
+# IDE / 编辑器
+.vs/
+.idea/
+*.user
+*.suo
 
-# Mac
+# 测试结果
+TestResults/
+
+# 操作系统
 .DS_Store
+__MACOSX/
+Thumbs.db
+desktop.ini
+
+# 仓库根目录的本地归档（如需纳入版本控制，删除此行后 git add -f 归档.zip）
+/*.zip

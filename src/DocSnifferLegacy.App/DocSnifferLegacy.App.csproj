@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net40</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>DocSnifferLegacy.App</RootNamespace>
+    <AssemblyName>DocSnifferLegacy</AssemblyName>
+    <PlatformTarget>x86</PlatformTarget>
+    <ApplicationIcon>DocSnifferLegacy.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DocSnifferLegacy.Core\DocSnifferLegacy.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <!-- 单文件合并工具（ILRepack 2.0.48 起可在 .NET 6+ 运行时上跨平台运行），仅构建期使用 -->
+  <ItemGroup>
+    <PackageReference Include="ILRepack" Version="2.0.48" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Release 构建后将 Core/Lucene.Net/SharpZipLib 合并进单一 exe，输出到 bin/.../net40/publish/ -->
+  <Target Name="MergeToSingleFile" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'"
+          Inputs="$(TargetPath);$(OutputPath)DocSnifferLegacy.Core.dll;$(OutputPath)Lucene.Net.dll;$(OutputPath)ICSharpCode.SharpZipLib.dll"
+          Outputs="$(OutputPath)publish/$(AssemblyName).exe">
+    <PropertyGroup>
+      <!-- 路径必须在 Target 内求值：顶层处 $(OutputPath) 尚未被 SDK 赋值 -->
+      <NetFxRefAssemblies>$(NuGetPackageRoot)microsoft.netframework.referenceassemblies.net40/1.0.3/build/.NETFramework/v4.0</NetFxRefAssemblies>
+      <SingleFileExe>$(OutputPath)publish/$(AssemblyName).exe</SingleFileExe>
+      <_DotNetHost>$(DOTNET_HOST_PATH)</_DotNetHost>
+      <_DotNetHost Condition="'$(_DotNetHost)' == ''">dotnet</_DotNetHost>
+    </PropertyGroup>
+    <MakeDir Directories="$(OutputPath)publish" />
+    <Exec Command="&quot;$(_DotNetHost)&quot; &quot;$(PkgILRepack)/tools/ILRepack.exe&quot; /internalize /ndebug /out:&quot;$(SingleFileExe)&quot; /lib:&quot;$(NetFxRefAssemblies)&quot; &quot;$(TargetPath)&quot; &quot;$(OutputPath)DocSnifferLegacy.Core.dll&quot; &quot;$(OutputPath)Lucene.Net.dll&quot; &quot;$(OutputPath)ICSharpCode.SharpZipLib.dll&quot;" />
+    <Delete Files="$(OutputPath)publish/$(AssemblyName).exe.config" />
+    <Message Importance="high" Text="单文件发布: $(SingleFileExe)" />
+  </Target>
+
+</Project>

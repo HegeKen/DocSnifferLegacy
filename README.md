@@ -1,234 +1,164 @@
-# DocSniffer Legacy Edition
+# DocSnifferLegacy
 
-**面向老旧 Windows 系统的轻量级本地文件检索与信息检测工具**
+DocSnifferLegacy 是 [DocSniffer](../../../Desktop/Codes/DocSniffer)（Tauri 2 + Rust + Tantivy 的现代版文档嗅探器）的**遗留系统配套版**：面向 Windows XP SP3 ~ Windows 7 的 .NET Framework 4.0 WinForms 实现，项目名称、页面布局、批次模型与规则检测均与 DocSniffer 对齐。**完全离线**，所有数据仅保存在本地。
 
-Rust · egui · Tantivy · 单文件 `.exe` · 完全离线
+> DocSniffer 桌面版依赖 WebView2（Windows 10+），服务器模式依赖浏览器（Windows 7 SP1+）；
+> DocSnifferLegacy 补上更老的 XP SP3 / Win7 RTM 一档，供低配旧机使用。
 
+## 界面布局（与 DocSniffer 一致）
 
-> **适用系统**：Windows 2000 / XP / Vista / Windows 7（含 32 位及 64 位）
-> **发布形态**：单个独立 `.exe` 可执行文件（无需 .NET Framework、无需 VC++ Redist、无需 WebView2）
-> **核心定位**：为仍在使用老旧 Windows 终端的用户提供轻量级的本地文件搜索、内容检索与按需信息检测能力，不依赖网络，开箱即用。
+- **头部**：品牌 "DocSnifferLegacy · 文档嗅探器（遗留系统版）" + 状态徽章（"已索引 N 个文件" + 索引目录路径）。
+- **搜索页**：批次范围下拉（"全部索引" / 各批次及文档数）+ 关键词输入 + 搜索按钮；结果列表含文件名 / 类型 / 大小 / 修改时间 / 得分 / 路径，双击打开文件，右键打开所在文件夹。
+- **扫描页**：目录 + 批次名称（可选，自动生成）+ "索引文件内容（否则仅索引文件名）"开关 + 开始扫描；进度条（N / M · 当前路径）、完成提示与"被跳过或索引失败"告警列表。
+- **敏感检测页**：规则表格（名称 / 类型 regex|keyword / 风险 low~critical / 作用范围 文件名·内容 / 正则或关键词 / 删除），可增删改并持久化；下方"执行检测"对指定路径（文件或目录）输出命中报告（风险等级着色）。
+- **索引管理页**：批次表格（批次名称 / 导入目录 / 实时文档数 / 创建时间）+ 更新 / 删除 / 一键清除全部索引。
 
----
+配色（浅灰底 #F5F6F8、白面板、蓝色主按钮 #2563EB、风险等级色阶）跟随 Web 版 `styles.css`；
+字体 Win7+ 使用微软雅黑，XP 自动回退宋体；标签页自绘为平面样式（激活项蓝字 + 蓝色下划线）。
 
-## 一、版本定位
+## 当前状态
 
-本版本 **Legacy Edition** 面向 Windows 7 以下的旧系统，采用 **Rust 原生 Win32 API + egui 即时渲染** 方案，完全脱离浏览器内核依赖，在低配硬件上保持低内存、低 CPU 开销。
+| 模块 | 状态 |
+|---|---|
+| 文件扫描器（递归 / 扩展名过滤 / 跳过重解析点 / 增量比对） | ✅ 完成 |
+| 编码检测（BOM / UTF-8 / UTF-16 / GB18030 / GBK / Big5） | ✅ 完成 |
+| 纯文本 / 代码文件提取（40+ 扩展名） | ✅ 完成 |
+| OOXML 提取：DOCX / XLSX / PPTX + PK 结构的 .wps / .et / .dps | ✅ 完成（自研 ZIP+XML，零依赖） |
+| Lucene.NET 3.0.3 索引 / 检索 + 自研 CJK 二元分词 | ✅ 完成 |
+| 批次模型（导入即批次 / 范围过滤 / 更新 / 删除 / 一键清除） | ✅ 完成 |
+| 敏感规则检测（正则 / 关键词，文件名+内容，内置默认规则） | ✅ 完成 |
+| WinForms 四标签页界面 | ✅ 完成 |
+| OLE2 格式（旧版 .wps / .et / .dps、.doc / .xls / .ppt） | ⏳ 规划（接入 NPOI） |
+| PDF（Pdfium） / OFD（自研 XML） / 压缩包穿透 / 结果高亮 | ⏳ 按路线图 |
 
-| 对比项 | 现代版本 | Legacy Edition |
-| :--- | :--- | :--- |
-| **支持系统** | Windows 10/11、macOS、Linux | Windows 2000 / XP / Vista / 7 |
-| **架构方案** | Tauri + 系统 WebView | Rust + Win32 API + egui（无浏览器内核） |
-| **GUI 渲染** | 现代 CSS/HTML 界面 | 原生 GDI / Direct2D 即时绘制 |
-| **富文档预览** | 支持高亮片段预览 | 仅提供纯文本摘要（降低内存开销） |
-| **安装包体积** | 较大 | 单个 `.exe`，体积小 |
+## 运行环境要求
 
----
+- Windows XP SP3（32 位）/ Vista / 7 / 8 / 10 / 11，x86 或 x64
+- .NET Framework 4.0（XP / Win7 需离线安装包，x86 约 48MB；Win7 未内置 4.0 需手动安装）
+- 无任何网络依赖、无注册表写入；设置 / 批次 / 规则存于 `%APPDATA%\DocSnifferLegacy\`，
+  Lucene 索引默认存于其 `index\` 子目录
 
-## 二、技术选型（实际实现）
+## 构建
 
-| 组件 | 选型方案 | 说明 |
-| :--- | :--- | :--- |
-| **编程语言** | **Rust 1.70+**（`i686-pc-windows-msvc` / `gnu` 工具链） | 通过静态链接消除运行时依赖 |
-| **GUI 框架** | **egui + eframe 0.28**（原生 Win32 后端） | 纯 Rust 即时模式 GUI，不依赖 WebView / IE / COM |
-| **全文检索引擎** | **Tantivy 0.22** | 纯 Rust 实现，仅依赖标准文件 I/O |
-| **中文分词** | **jieba-rs 0.7**（自定义 Tantivy Tokenizer） | 支持中文内容搜索 |
-| **文件扫描** | `walkdir` + `rayon` + `crossbeam-channel` | 多线程并发扫描，支持进度与取消 |
-| **内容提取** | 自研轻量解析器 | 纯文本（自动编码检测）、Office OOXML、WPS 专有 OLE(.wps/.dps/.et)、PDF 文本 |
-| **文本编码** | `encoding_rs` + `chardetng` | 兼容 GBK / GB18030 / Big5 等历史中文编码 |
-| **数据存储** | Tantivy 索引 + `rules.json` + `settings.json` | 嵌入式、无外部服务 |
-
----
-
-## 三、核心功能
-
-- ✅ **全盘/目录递归扫描**：支持多线程并发，实时进度反馈，可随时取消
-- ✅ **文件名/内容全文搜索**：基于 Tantivy 倒排索引，支持中文分词、AND/OR、双引号短语查询
-- ✅ **信息检测规则扫描**：内置身份证号、手机号、关键词规则；支持仅按文件名扫描；支持自定义规则库
-- ✅ **便携模式（Portable Mode）**：exe 同目录存在 `PORTABLE.flag` 时，所有数据读写于 `./Data`，即插即用、不留痕
-- ✅ **离线规则库**：默认 `rules.json` 内嵌于程序，可在界面增删、保存、恢复默认
-- ✅ **报告导出**：扫描/搜索结果导出为 CSV（带 UTF-8 BOM，兼容 Excel 2003）或 JSON
-- ✅ **命令行静默模式**：无界面运行，适合批量/无人值守场景
-
----
-
-## 四、界面布局（egui 三栏式）
-
-采用 **左树形目录 + 右上搜索栏 + 右下结果列表** 的三栏式布局，全部由原生 Win32 消息循环驱动，无任何 Web 组件。
-
-> 中文字体：egui 默认字体仅含拉丁字符，程序启动时会自动从系统加载一款中文字体（按 微软雅黑 `msyh.ttc` → 宋体 `simsun.ttc` → 黑体 `simhei.ttf` 顺序查找）注册为后备字体，因此界面中文可正常显示；若系统缺少上述字体则退化为仅拉丁显示。
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  [🔍 搜索框]  [模式: 内容|文件名|文件名+内容]                │  ← 工具栏
-│  [搜索] [📂 选择路径] [▶ 索引扫描] [★ 敏感扫描]            │
-│  [☰ 文件名敏感] [▣ 规则管理] [✕ 取消]                       │
-│  状态栏: 发现 N | 处理 M | 当前: <文件路径>                  │
-├──────────┬───────────────────────────────────────────────────┤
-│ 扫描根   │  搜索结果表（路径|文件名|匹配片段|分数）          │
-│ 目录列表 │  敏感结果表（路径|文件名|规则|命中文本|次数）     │
-│ [+ 添加] │  导出: [路径] [导出报告]                          │
-│ [清空]   │  状态: 就绪                                       │
-├──────────┴───────────────────────────────────────────────────┤
-│  规则管理窗口: [添加规则] [保存] [恢复默认] [✕]             │
-└──────────────────────────────────────────────────────────────┘
-```
-
-**交互特性**
-
-- 键盘快捷键：`Ctrl+F` 聚焦搜索、`Ctrl+E` 导出报告、`Esc` 取消当前任务
-- 大结果集采用虚拟滚动（仅渲染可视区域），低配机流畅滚动
-- 支持主题切换（经典灰度 / 墨绿 / 深蓝）与字号调节
-
----
-
-## 五、数据存储与目录结构
-
-### 5.1 便携模式目录
-
-```
-DocSnifferLegacy/
-├── docsniffer_legacy.exe       # 主程序
-├── PORTABLE.flag               # 空文件，触发便携模式
-└── Data/                       # 便携模式下自动创建
-    ├── index/
-    │   └── local/              # Tantivy 索引（单分片）
-    ├── rules.json              # 用户自定义规则
-    └── settings.json           # 界面配置（主题/字号/历史路径）
-```
-
-### 5.2 非便携模式
-
-当不存在 `PORTABLE.flag` 时，数据写入系统应用数据目录（Windows 为 `%APPDATA%/DocSnifferLegacy`，macOS/Linux 为标准用户数据目录）。
-
----
-
-## 六、构建与发布
-
-### 6.1 静态链接配置（`.cargo/config.toml`）
-
-针对旧系统，编译时必须锁定 **静态 CRT 链接** 与兼容的 API 版本：
-
-> 注意：GUI 子系统须在 `src/main.rs` 声明 `#![windows_subsystem = "windows"]`，否则 MSVC 链接器会因入口点不匹配而报 `LNK2019: 无法解析的外部符号 WinMain`。`config.toml` 中的 `-SUBSYSTEM:WINDOWS` 仅负责锁定兼容的 Windows 版本号。
-
-> **重要（Win7/XP 兼容）**：MSVC（VS2017+ / Windows SDK 10）编译的产物会引用 `api-ms-win-*.dll`（API-Set 转发库）。`+crt-static` 只能免掉 VC++ 运行库，**免不掉**这套 API-Set；而它们（如 `api-ms-win-core-libraryloader-l1-2-0.dll`）由 Universal CRT 补丁 **KB2999226** 引入，Win7/XP 默认不存在。因此**追求 XP/Win7 免依赖运行，应优先选择 GNU（MinGW-w64）工具链**——它直接链接 `kernel32/user32/gdi32`，不引入 API-Set，无此问题。
-
-```toml
-[target.i686-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-SUBSYSTEM:WINDOWS,5.01"]
-
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-SUBSYSTEM:WINDOWS,5.02"]
-
-# 若使用 GNU 工具链（更适合免 VC++ 环境）
-[target.i686-pc-windows-gnu]
-rustflags = ["-C", "target-feature=+crt-static"]
-linker = "i686-w64-mingw32-gcc"
-
-[target.x86_64-pc-windows-gnu]
-rustflags = ["-C", "target-feature=+crt-static"]
-linker = "x86_64-w64-mingw32-gcc"
-```
-
-### 6.2 构建命令
+代码面向 .NET Framework 4.0（`net40`），构建不依赖 Windows：
 
 ```bash
-# ---- 推荐：GNU（MinGW-w64）工具链，免 UCRT/API-Set，最适合 XP/Win7 免依赖运行 ----
-# 需要先：rustup target add x86_64-pc-windows-gnu 并安装 mingw-w64
-cargo build --release --target x86_64-pc-windows-gnu   # 64 位（Win7 64 位）
-
-# 32 位（XP/Vista 及 32 位 Win7）
-rustup target add i686-pc-windows-gnu
-cargo build --release --target i686-pc-windows-gnu
-
-# ---- 备选：MSVC 工具链（需目标机器安装 KB2999226 / KB3118401 才能在 Win7/XP 运行）----
-cargo build --release --target i686-pc-windows-msvc    # 32 位
-cargo build --release --target x86_64-pc-windows-msvc  # 64 位
+# macOS / Linux / Windows 通用（需要任意 .NET SDK 6+）
+dotnet build DocSnifferLegacy.sln -c Release
 ```
 
-产物（`docsniffer_legacy.exe`）直接位于 target 目录，**无需** 安装 Visual C++ Redistributable。若用 GNU 工具链构建，同时在纯净 XP/Win7 上可直接双击运行；若用 MSVC 构建，Win7/XP 需先安装 UCRT 补丁（KB2999226 或 KB3118401）才能运行，否则会提示缺失 `api-ms-win-*.dll`。如需进一步压缩，可选用 **UPX** 二次压缩（可选，不影响运行）。
+Windows 上也可用 Visual Studio 2017+ 打开 `DocSnifferLegacy.sln` 构建（VS2010/2012 无法打开
+SDK 风格工程；若必须用旧版 IDE 可转成传统工程文件，目标框架不变）。源码统一使用 C# 5 语法。
 
----
+## 部署（绿色单目录）
 
-## 七、命令行静默模式
+将以下文件复制到同一目录即可运行，无需安装程序：
 
-为满足批量终端自查与无人值守场景，支持无界面运行：
-
-```cmd
-# 扫描 D 盘，生成报告到 report.csv 后自动退出
-docsniffer_legacy.exe --scan D:\ --export report.csv --silent
-
-# 指定自定义规则库扫描并导出 JSON
-docsniffer_legacy.exe --scan C:\ --rules custom_rules.json --export result.json
-
-# 查看版本 / 帮助
-docsniffer_legacy.exe --version
-docsniffer_legacy.exe --help
+```
+DocSnifferLegacy.exe
+DocSnifferLegacy.Core.dll
+Lucene.Net.dll
+ICSharpCode.SharpZipLib.dll
 ```
 
-| 参数 | 说明 |
-| :--- | :--- |
-| `--scan <路径>` | 静默扫描指定路径（信息检测） |
-| `--rules <文件>` | 指定自定义规则库（`.json`），缺省用内嵌默认规则 |
-| `--export <文件>` | 导出报告（`.csv` 或 `.json`），可选 |
-| `--silent` | 无界面运行 |
-| `--help` / `--version` | 打印帮助 / 版本后退出 |
+`dotnet build` 后各文件位于 `src/DocSnifferLegacy.App/bin/Release/net40/`。
 
-命令行模式下进程会以低优先级运行，避免影响前台业务系统。
+应用图标来自仓库根目录的 `DocSnifferLegacy.png`（2048×2048）：构建时通过
+`src/DocSnifferLegacy.App/DocSnifferLegacy.ico`（16/24/32/48/64/128/256 全 BMP 条目，
+兼容不支持 PNG 图标条目的 Windows XP）嵌入 exe（csproj `ApplicationIcon`），
+窗体与任务栏图标运行时从 exe 内嵌资源读取。若替换源图，用 Pillow 重新生成：
 
----
+```bash
+python3 -c "from PIL import Image; Image.open('DocSnifferLegacy.png').convert('RGBA')\
+.save('src/DocSnifferLegacy.App/DocSnifferLegacy.ico', format='ICO', \
+sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)], bitmap_format='bmp')"
+```
 
-## 八、内容提取支持
+### 单文件版
 
-为降低内存与 CPU 开销，仅提取纯文本摘要，不解析样式、图片与表格结构：
+Release 构建会额外将 `DocSnifferLegacy.Core.dll`、`Lucene.Net.dll`、`ICSharpCode.SharpZipLib.dll`
+用 ILRepack 合并进单一 exe，输出到
+`src/DocSnifferLegacy.App/bin/Release/net40/publish/DocSnifferLegacy.exe`（约 1.3 MB）。
+合并仅发生在构建期（ILRepack 2.0.48 起可在 macOS/Linux 的 .NET SDK 构建下运行，经 NuGet
+包引用随仓库自动还原，无需全局安装），产物仍是面向 .NET Framework 4.0 的普通程序集，
+XP SP3 / Win7 运行要求不变；x86 GUI 子系统、应用图标与版本资源均保留。
 
-| 类型 | 提取方式 |
-| :--- | :--- |
-| **纯文本/代码文件** | 字节流 → 编码检测（chardetng）→ 解码；自动回退 GB18030 |
-| **Office OOXML** | `docx` / `xlsx` / `pptx` / `docm` / `xlsm` / `pptm`（zip 内 XML 文本标签抽取） |
-| **WPS 专有 OLE 二进制** | `wps` / `dps` / `et`（OLE2/CFB 复合文档：按内部流解析 .wps 文本、.dps 演示文本、.et 共享字符串表） |
-| **PDF** | 解析文本操作符（`Tj` / `TJ`），自动解压 FlateDecode 流 |
-| **其他** | 一律按纯文本处理（含未知类型） |
+说明：
 
----
+- `bin/Release/net40/` 下的多文件产物与单文件产物并存，前者仍供 Net8 验证壳按路径引用。
+- 单文件目录内不再生成 `.exe.config`（其内容仅是默认 `supportedRuntime` 声明，可省）。
+- 合并目标带增量检查：输入未变化时重复构建会跳过合并；Debug 构建不做合并。
 
-## 九、性能与兼容性
 
-| 优化策略 | 具体措施 |
-| :--- | :--- |
-| **I/O 优先级** | 调用 Win32 `SetPriorityClass` 将进程设为 `BELOW_NORMAL`，避免影响前台业务 |
-| **跳过系统目录** | 默认跳过 `Windows`、`System Volume Information`、`$Recycle.Bin` 等，避免触发权限弹窗 |
-| **内存限制** | 索引器内存上限默认 64MB，超出则强制落盘（基于 Tantivy 内存预算） |
-| **弱机适配** | 根据可用核数动态调整线程池；线程切换开销较大的单核环境自动退化为较少线程 |
-| **时间时钟** | 旧系统缺 `GetTickCount64` 时回退 `GetTickCount`（约 49 天回绕，单次扫描远小于此） |
+## 批次模型（对齐 DocSniffer）
 
-**兼容性测试清单**
+- 每次在"扫描"页导入目录都会生成一个批次（可命名，默认"批次 yyyy-MM-dd HH:mm"）；
+  同一路径以**最后一次扫描所属批次为准**（重新导入会把已有文档归入新批次）。
+- 搜索页可把范围限定到某个批次；"索引管理"页可对批次重新扫描更新（增量）、删除批次
+  （连同其文档）或一键清除全部索引。
+- 仅文件名模式（扫描页取消勾选"索引文件内容"）下，提取失败的文件也会按文件名入库。
 
-| 测试项目 | 预期结果 |
-| :--- | :--- |
-| **Windows XP SP3 (32位)** | 双击 exe 直接运行，检索与信息检测正常，中文无乱码 |
-| **Windows Vista (32/64位)** | 正常运行（如需则请求提权） |
-| **Windows 7 (32/64位)** | 正常运行，界面清晰 |
-| **无网络/受控网络环境** | 完全不依赖网络，启动不访问 DNS/ICMP |
+## 敏感检测（对齐 DocSniffer 规则页）
 
----
+- 规则 = 名称 + 类型（`regex` 按原样匹配 / `keyword` 不区分大小写包含）+ 风险等级
+  （low / medium / high / critical）+ 作用范围（文件名、内容）+ 模式串；非法正则自动跳过。
+- 首次运行内置 5 条默认规则：身份证号、手机号码、IP 地址、机密字样、内部资料。
+- 每条规则每个文件记首个命中；关键词命中的内容会带前后约 40 字上下文。
+- 规则持久化于 `%APPDATA%\DocSnifferLegacy\rules.xml`（与 DocSniffer 的 JSON 各自独立）。
 
-## 十、已知限制
+## 架构
 
-| 问题 | 解决方法 |
-| :--- | :--- |
-| **旧版 MS Office .doc/.ppt/.xls（OLE 格式）** | 不解析 MS Office 97-2003 二进制格式（Word/PPT/Excel 原生 OLE）；WPS 专有 `.wps`/`.dps`/`.et` 已支持，其余建议转换为 .docx/.xlsx/.pptx 后扫描 |
-| **富文本预览** | 仅展示纯文本摘要与前 50 字上下文，不支持 HTML 高亮 |
-| **网络映射盘（如 Z:\）** | 可扫描，但速度受限于网络带宽，建议拷贝至本地再扫描 |
+```
+DocSnifferLegacy.App        WinForms（头部/标签页外壳 + 四页面，主题对齐 Web 版）
+├── MainForm                外壳：品牌头部 + 状态徽章 + 平面标签页
+├── Pages/Search|Scan|Rules|Batches
+├── AppServices             服务容器 + 全局任务忙闸
+└── BatchStore / RuleStore  批次与规则 XML 持久化
+DocSnifferLegacy.Core
+├── IO/FileScanner          递归扫描，重解析点跳过，排除目录
+├── IO/ZipReader            自研 ZIP（store/deflate），OOXML 与压缩包穿透共用
+├── Routing/FormatRouter    扩展名 → 提取器路由（顺序即优先级）
+├── Extract/*               ITextExtractor 管道：OoxmlExtractor / TextFileExtractor
+├── Text/EncodingDetector  BOM → UTF-8 严格 → UTF-16 启发式评分 → GB18030 → Big5 → 回退
+├── Sensitive/*             规则引擎（正则/关键词，文件名+内容）
+└── Index/*                 CjkBigramAnalyzer（二元切分）+ LuceneIndexService（批次字段）
+```
 
----
+索引字段：`path`(存)、`filename`(存+析)、`content`(析不存)、`batch`(存)、`size`、`modified`、`filetype`。
+中文按二元切分（相邻两字一个词，孤立单字仅在整段仅一字时成词，保证查询与索引两侧切分一致）；
+多关键词默认 OR、按评分排序；查询语法错误自动转义重试。索引锁使用 `SimpleFSLockFactory`。
 
-## 快速使用指南
+## 已知限制
 
-1. 将 `docsniffer_legacy.exe` 拷贝至 U 盘或本地文件夹，建议放在磁盘根目录。
-2. **（可选）** 新建一个空的 `PORTABLE.flag` 文件，让程序将所有缓存写在 U 盘上，不在被检电脑留下任何痕迹。
-3. 双击 exe 打开程序，单击 **「选择路径」**，勾选需要扫描的目录（建议逐个扫描以节约内存）。
-4. 在搜索框输入关键词并选择搜索模式（内容 / 文件名），点击 **「搜索」** 检索；或点击 **「索引扫描」** 建立索引后，用 **「敏感扫描」** / **「文件名敏感」** 进行信息检测。
-5. 扫描完毕后，点击 **「导出报告」**，将结果保存为 CSV 或 JSON 文件查看。
+- **Big5 繁体**：与 GB18030 字节重叠度高，会被按 GB18030 解出"兼容乱码"（仍可部分检索）。
+- **单字中文检索**：二元切分下，被其他汉字包围的单字不单独成词，建议两字以上关键词。
+- **OLE2 旧版 WPS / .doc 系**：暂不支持内容提取（可按文件名检索）；接入 NPOI 后解决。
+- **PDF / OFD**：暂不支持。
+- FAT32 修改时间精度 2 秒，同秒内同大小改写可能漏检增量（NTFS 无此问题）。
+- 桌面 WinForms 版没有 DocSniffer 的文件监控自动重索引与 snippet 摘要（按路线图补充）。
 
----
+## 测试
+
+```bash
+dotnet build DocSnifferLegacy.sln -c Debug
+mono tests/DocSnifferLegacy.Tests/bin/Debug/net40/DocSnifferLegacy.Tests.exe   # macOS/Linux
+# Windows 上直接运行同名 exe
+```
+
+覆盖：编码检测 9 组、ZIP 读取器（store/deflate/GBK 文件名/损坏流）、OOXML 三族提取
+（富文本/拼音注音/页码域/tab 换行）、扫描+索引+搜索全链路、增量（修改/删除/新增/无变化/
+损坏文件容错/文件名检索）、批次（计数/范围过滤/重新导入归属/删除/一键清除）、
+敏感检测（正则/关键词/作用范围/非法正则跳过/仅文件名模式）共 64 项断言，当前全部通过。
+
+**非 Windows 开发机的运行时验证**（mono 不可用时，新版 macOS 已无 mono bottle）：
+
+```bash
+dotnet run --project tests/DocSnifferLegacy.Tests.Net8 -c Release
+```
+
+该壳用 .NET 8 运行时加载 net40 编译产物执行同一套测试源码，仅用于开发机验证；
+发布物以 `net40` 产物为准，最终需在真实 XP SP3 / Win7 上回归验证。
+
+## 许可
+
+仅供学习与内部本地使用，请遵守所在地区法律法规及第三方依赖（Lucene.NET、SharpZipLib）的开源许可协议。

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    运行时验证壳：在非 Windows 环境用 .NET 8 运行时加载 net40 编译产物，
+    执行与 net40 测试工程完全相同的测试源码。仅在开发机上使用，不参与部署。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>DocSnifferLegacy.Tests</RootNamespace>
+    <AssemblyName>DocSnifferLegacy.Tests.Net8</AssemblyName>
+    <StartupObject>DocSnifferLegacy.Tests.TestMain</StartupObject>
+    <NoWarn>NU1701</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\DocSnifferLegacy.Tests\TestMain.cs" />
+    <Compile Include="..\DocSnifferLegacy.Tests\TestZipWriter.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="DocSnifferLegacy.Core">
+      <HintPath>..\..\src\DocSnifferLegacy.Core\bin\Release\net40\DocSnifferLegacy.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="Lucene.Net">
+      <HintPath>..\..\src\DocSnifferLegacy.Core\bin\Release\net40\Lucene.Net.dll</HintPath>
+    </Reference>
+    <Reference Include="ICSharpCode.SharpZipLib">
+      <HintPath>..\..\src\DocSnifferLegacy.Core\bin\Release\net40\ICSharpCode.SharpZipLib.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

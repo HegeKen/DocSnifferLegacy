@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>5</LangVersion>
+    <Deterministic>true</Deterministic>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 跨平台编译 .NET Framework 4.0 所需的引用程序集（不参与发布） -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+</Project>
