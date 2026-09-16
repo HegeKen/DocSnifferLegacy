@@ -5,12 +5,16 @@ using System.Drawing;
 using System.Threading;
 using System.Windows.Forms;
 using DocSnifferLegacy.Core.Index;
+using DocSnifferLegacy.Core.Search;
 
 namespace DocSnifferLegacy.App.Pages
 {
-    /// <summary>搜索页：批次范围选择 + 关键词输入 + 结果列表（对齐 Web 版搜索页布局）。</summary>
+    /// <summary>搜索页：批次范围选择 + 关键词输入 + 结果列表（含摘要列与命中高亮预览）。</summary>
     internal sealed class SearchPage : Panel
     {
+        /// <summary>摘要列预生成的结果条数上限（摘要需重读文件，全部生成代价过高）。</summary>
+        private const int SnippetPrefetchCount = 50;
+
         private readonly AppServices services;
 
         private ComboBox batchSelect;
@@ -18,6 +22,9 @@ namespace DocSnifferLegacy.App.Pages
         private Button btnSearch;
         private Label metaLabel;
         private ListView lvResults;
+        private RichTextBox preview;
+        private string lastQuery;
+        private int previewGeneration;
         private Thread worker;
 
         public SearchPage(AppServices services)
@@ -65,6 +72,15 @@ namespace DocSnifferLegacy.App.Pages
             metaLabel.Height = 22;
             metaLabel.Padding = new Padding(0, 6, 0, 0);
 
+            preview = new RichTextBox();
+            preview.Dock = DockStyle.Bottom;
+            preview.Height = 92;
+            preview.ReadOnly = true;
+            preview.BorderStyle = BorderStyle.FixedSingle;
+            preview.BackColor = Theme.Panel;
+            preview.Font = Theme.Body;
+            preview.HideSelection = true;
+
             lvResults = new ListView();
             lvResults.View = View.Details;
             lvResults.FullRowSelect = true;
@@ -76,8 +92,10 @@ namespace DocSnifferLegacy.App.Pages
             lvResults.Columns.Add("大小", 92, HorizontalAlignment.Right);
             lvResults.Columns.Add("修改时间", 130);
             lvResults.Columns.Add("得分", 60, HorizontalAlignment.Right);
+            lvResults.Columns.Add("摘要", 340);
             lvResults.Columns.Add("路径", 420);
             lvResults.DoubleClick += delegate { OpenSelected(false); };
+            lvResults.SelectedIndexChanged += delegate { StartPreview(); };
             try
             {
                 typeof(ListView).InvokeMember("DoubleBuffered",
@@ -95,7 +113,9 @@ namespace DocSnifferLegacy.App.Pages
             menu.Items.Add(openFolderItem);
             lvResults.ContextMenuStrip = menu;
 
+            // Dock 布局按加入顺序的逆序处理：searchRow(top) → metaLabel(top) → preview(bottom) → lvResults(fill)
             Controls.Add(lvResults);
+            Controls.Add(preview);
             Controls.Add(metaLabel);
             Controls.Add(searchRow);
         }
@@ -146,6 +166,7 @@ namespace DocSnifferLegacy.App.Pages
             if (query.Length == 0) return;
             if (services.IsBusy) { metaLabel.Text = "有任务正在进行，请稍候..."; return; }
 
+            lastQuery = query;
             btnSearch.Text = "搜索中…";
             btnSearch.Enabled = false;
             metaLabel.Text = "搜索中...";
@@ -162,6 +183,15 @@ namespace DocSnifferLegacy.App.Pages
                 var watch = Stopwatch.StartNew();
                 IList<SearchResultItem> items = services.Index.Search(query, 500, batchId);
                 watch.Stop();
+                // 摘要列：对前 N 条重读文件生成命中摘要（提取已限量，代价可控）
+                if (items != null)
+                {
+                    int limit = Math.Min(items.Count, SnippetPrefetchCount);
+                    for (int i = 0; i < limit; i++)
+                    {
+                        items[i].Snippet = SnippetBuilder.TryMake(services.Router, items[i].Path, query);
+                    }
+                }
                 double ms = watch.Elapsed.TotalMilliseconds;
                 Ui(delegate { FillResults(items, ms); });
             }
@@ -186,6 +216,7 @@ namespace DocSnifferLegacy.App.Pages
 
         private void FillResults(IList<SearchResultItem> items, double ms)
         {
+            previewGeneration++; // 结果集变化：作废进行中的预览生成
             lvResults.BeginUpdate();
             try
             {
@@ -199,6 +230,7 @@ namespace DocSnifferLegacy.App.Pages
                         lvi.SubItems.Add(FormatSize(item.Size));
                         lvi.SubItems.Add(item.Modified == DateTime.MinValue ? "-" : item.Modified.ToString("yyyy-MM-dd HH:mm"));
                         lvi.SubItems.Add(item.Score.ToString("F2"));
+                        lvi.SubItems.Add(item.Snippet ?? string.Empty);
                         lvi.SubItems.Add(item.Path);
                         lvi.Tag = item.Path;
                         lvResults.Items.Add(lvi);
@@ -211,7 +243,76 @@ namespace DocSnifferLegacy.App.Pages
             }
             metaLabel.Text = (items == null || items.Count == 0)
                 ? "没有匹配结果。"
-                : string.Format("共 {0} 条结果（{1:F0} 毫秒）。双击打开文件，右键可打开所在文件夹。", items.Count, ms);
+                : string.Format("共 {0} 条结果（{1:F0} 毫秒）。双击打开文件，右键可打开所在文件夹，单击结果可预览命中内容。", items.Count, ms);
+        }
+
+        /// <summary>单选结果 → 预览框显示命中摘要并高亮关键词（列表无摘要时后台重读文件）。</summary>
+        private void StartPreview()
+        {
+            previewGeneration++;
+            int generation = previewGeneration;
+            if (lvResults.SelectedItems.Count == 0)
+            {
+                preview.Text = string.Empty;
+                return;
+            }
+            ListViewItem lvi = lvResults.SelectedItems[0];
+            string path = lvi.Tag as string;
+            if (string.IsNullOrEmpty(path))
+            {
+                preview.Text = string.Empty;
+                return;
+            }
+
+            string cached = lvi.SubItems.Count > 5 ? lvi.SubItems[5].Text : null;
+            if (!string.IsNullOrEmpty(cached))
+            {
+                RenderPreview(cached);
+                return;
+            }
+
+            string query = lastQuery ?? string.Empty;
+            Thread t = new Thread(new ThreadStart(delegate
+            {
+                string snippet = SnippetBuilder.TryMake(services.Router, path, query);
+                Ui(delegate
+                {
+                    if (generation != previewGeneration) return; // 选择已变化，丢弃
+                    RenderPreview(snippet);
+                });
+            }));
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        private void RenderPreview(string snippet)
+        {
+            preview.Text = string.IsNullOrEmpty(snippet)
+                ? "（未找到可显示的命中内容；文件可能已移动或为仅文件名索引）"
+                : snippet;
+            preview.ForeColor = string.IsNullOrEmpty(snippet) ? Theme.Muted : Theme.Text;
+
+            // 高亮所有关键词命中（与摘要词提取规则一致；Find 默认不区分大小写）
+            if (!string.IsNullOrEmpty(snippet))
+            {
+                List<string> terms = SnippetBuilder.ExtractTerms(lastQuery ?? string.Empty);
+                foreach (string term in terms)
+                {
+                    if (term.Length == 0) continue;
+                    int idx = 0;
+                    while (idx < snippet.Length)
+                    {
+                        int found = preview.Find(term, idx, RichTextBoxFinds.NoHighlight);
+                        if (found < 0) break;
+                        preview.SelectionStart = found;
+                        preview.SelectionLength = term.Length;
+                        preview.SelectionBackColor = Theme.Highlight;
+                        idx = found + term.Length;
+                    }
+                }
+                preview.SelectionStart = 0;
+                preview.SelectionLength = 0;
+            }
         }
 
         private void OpenSelected(bool openFolder)

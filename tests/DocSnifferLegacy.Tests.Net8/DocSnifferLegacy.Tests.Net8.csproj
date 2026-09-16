@@ -29,6 +29,9 @@
     <Reference Include="ICSharpCode.SharpZipLib">
       <HintPath>..\..\src\DocSnifferLegacy.Core\bin\Release\net40\ICSharpCode.SharpZipLib.dll</HintPath>
     </Reference>
+    <Reference Include="NPOI">
+      <HintPath>..\..\src\DocSnifferLegacy.Core\bin\Release\net40\NPOI.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

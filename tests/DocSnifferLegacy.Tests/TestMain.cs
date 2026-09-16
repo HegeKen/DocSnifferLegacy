@@ -6,8 +6,12 @@ using DocSnifferLegacy.Core.Extract;
 using DocSnifferLegacy.Core.Index;
 using DocSnifferLegacy.Core.IO;
 using DocSnifferLegacy.Core.Routing;
+using DocSnifferLegacy.Core.Search;
 using DocSnifferLegacy.Core.Sensitive;
 using DocSnifferLegacy.Core.Text;
+using NPOI.HSSF.UserModel;
+using NPOI.POIFS.FileSystem;
+using NPOI.SS.UserModel;
 
 namespace DocSnifferLegacy.Tests
 {
@@ -24,12 +28,17 @@ namespace DocSnifferLegacy.Tests
         private static int Main()
         {
 #if NET8_0_OR_GREATER
-            // net8 验证壳：GBK/Big5/GB18030 属于 Windows 代码页，需注册 CodePages 提供程序
+            // net8 验证壳：GBK/Big5/GB18030/CP1252 属于 Windows 代码页，需注册 CodePages 提供程序
             Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 #endif
             TestEncoding();
             TestZipReader();
             TestOoxmlExtractor();
+            TestOle2Extractor();
+            TestOfdExtractor();
+            TestZipPenetration();
+            TestPdfiumExtractor();
+            TestSnippetBuilder();
             TestPipelineAndIndex();
             TestSensitive();
             Console.WriteLine();
@@ -282,6 +291,438 @@ namespace DocSnifferLegacy.Tests
             }
         }
 
+        // ---------- OLE2 提取（NPOI 容器 + 自研 doc/ppt 解析） ----------
+
+        private static byte[] BuildOle2(params KeyValuePair<string, byte[]>[] streams)
+        {
+            var poifs = new NPOIFSFileSystem();
+            try
+            {
+                foreach (KeyValuePair<string, byte[]> kv in streams)
+                {
+                    poifs.Root.CreateDocument(kv.Key, new MemoryStream(kv.Value));
+                }
+                var ms = new MemoryStream();
+                poifs.WriteFileSystem(ms);
+                return ms.ToArray();
+            }
+            finally
+            {
+                poifs.Close();
+            }
+        }
+
+        private static byte[] BuildXlsFixture()
+        {
+            var wb = new HSSFWorkbook();
+            ISheet sheet = wb.CreateSheet("预算");
+            IRow row = sheet.CreateRow(0);
+            row.CreateCell(0).SetCellValue("部门预算表");
+            row.CreateCell(1).SetCellValue(12345.5);
+            IRow row2 = sheet.CreateRow(1);
+            row2.CreateCell(0).SetCellValue("季度支出明细");
+            var ms = new MemoryStream();
+            wb.Write(ms);
+            return ms.ToArray();
+        }
+
+        /// <summary>
+        /// 构造 Word 97 结构 .doc：WordDocument 流（FIB + 文本区）+ 1Table 流（CLX 分片表）。
+        /// 两个分片：UTF-16LE 中文分片 + 8 位压缩 ASCII 分片，覆盖两种 fc 形态。
+        /// </summary>
+        private static byte[] BuildDocFixture(out string expected)
+        {
+            const int textOffset = 0x400;
+            string text1 = "合同编号：HT-2024-001。\r甲方：北京示例科技有限公司。";
+            string text2 = "REPORT-2024 ";
+            byte[] text1Bytes = Encoding.Unicode.GetBytes(text1);
+            byte[] text2Bytes = Encoding.ASCII.GetBytes(text2);
+            int text2Offset = textOffset + text1Bytes.Length;
+
+            var wd = new byte[text2Offset + text2Bytes.Length];
+            wd[0] = 0xEC; wd[1] = 0xA5;              // wIdent = 0xA5EC
+            wd[2] = 0xC1; wd[3] = 0x00;              // nFib = 0x00C1（Word 97）
+            wd[0x0A] = 0x00; wd[0x0B] = 0x02;        // fWhichTblStm → 1Table
+            Array.Copy(text1Bytes, 0, wd, textOffset, text1Bytes.Length);
+            Array.Copy(text2Bytes, 0, wd, text2Offset, text2Bytes.Length);
+
+            uint fcCompressed = ((uint)text2Offset << 1) | 0x40000000u;
+            var tbl = new byte[33];                   // Pcdt: 1 + 4 + PlcPcd(28)
+            tbl[0] = 0x02;
+            WriteLe32(tbl, 1, 28);                    // lcb(PlcPcd)
+            WriteLe32(tbl, 5, 0);                     // cp0
+            WriteLe32(tbl, 9, (uint)text1.Length);    // cp1
+            WriteLe32(tbl, 13, (uint)(text1.Length + text2.Length)); // cp2
+            WriteLe32(tbl, 17, 0);                    // pcd1 保留字 + prm
+            WriteLe32(tbl, 19, (uint)textOffset);     // pcd1.fc（UTF-16）
+            WriteLe32(tbl, 23, 0);
+            WriteLe32(tbl, 25, 0);                    // pcd2 保留字 + prm
+            WriteLe32(tbl, 27, fcCompressed);         // pcd2.fc（压缩）
+            WriteLe32(wd, 0x1A2, 0);                  // fcClx = 0
+            WriteLe32(wd, 0x1A6, (uint)tbl.Length);   // lcbClx
+
+            expected = text1.Replace('\r', '\n') + text2;
+            return BuildOle2(
+                new KeyValuePair<string, byte[]>("WordDocument", wd),
+                new KeyValuePair<string, byte[]>("1Table", tbl));
+        }
+
+        /// <summary>构造 fEncrypted 置位的 .doc（应报错而非静默）。</summary>
+        private static byte[] BuildEncryptedDocFixture()
+        {
+            var wd = new byte[0x400];
+            wd[0] = 0xEC; wd[1] = 0xA5;
+            wd[2] = 0xC1; wd[3] = 0x00;
+            wd[0x0A] = 0x00; wd[0x0B] = 0x03;        // fWhichTblStm | fEncrypted
+            return BuildOle2(new KeyValuePair<string, byte[]>("WordDocument", wd));
+        }
+
+        /// <summary>构造 .ppt：容器记录内含 TextCharsAtom（UTF-16）与 TextBytesAtom（GBK）。</summary>
+        private static byte[] BuildPptFixture(out string expectedChars, out string expectedBytes)
+        {
+            expectedChars = "项目评审会汇报材料";
+            expectedBytes = "年度预算说明";
+            byte[] charsBody = Encoding.Unicode.GetBytes(expectedChars);
+            byte[] bytesBody = Encoding.GetEncoding(936).GetBytes(expectedBytes);
+
+            var payload = new byte[8 + charsBody.Length + 8 + bytesBody.Length];
+            int pos = 0;
+            // TextCharsAtom：recVer=0, recType=0x0FA0
+            payload[pos] = 0; payload[pos + 1] = 0;
+            payload[pos + 2] = 0xA0; payload[pos + 3] = 0x0F;
+            WriteLe32(payload, pos + 4, (uint)charsBody.Length);
+            Array.Copy(charsBody, 0, payload, pos + 8, charsBody.Length);
+            pos += 8 + charsBody.Length;
+            // TextBytesAtom：recVer=0, recType=0x0FA8
+            payload[pos] = 0; payload[pos + 1] = 0;
+            payload[pos + 2] = 0xA8; payload[pos + 3] = 0x0F;
+            WriteLe32(payload, pos + 4, (uint)bytesBody.Length);
+            Array.Copy(bytesBody, 0, payload, pos + 8, bytesBody.Length);
+            pos += 8 + bytesBody.Length;
+
+            // 外层容器记录：recVer=0xF, recType=0x03E8
+            var stream = new byte[8 + payload.Length];
+            stream[0] = 0x0F; stream[1] = 0x00;
+            stream[2] = 0xE8; stream[3] = 0x03;
+            WriteLe32(stream, 4, (uint)payload.Length);
+            Array.Copy(payload, 0, stream, 8, payload.Length);
+
+            return BuildOle2(new KeyValuePair<string, byte[]>("PowerPoint Document", stream));
+        }
+
+        /// <summary>构造旧版 WPS 风格 OLE2：无 WordDocument/Workbook 结构，文本混在二进制废字节中。</summary>
+        private static byte[] BuildWpsMiningFixture()
+        {
+            var body = new List<byte>();
+            body.AddRange(new byte[] { 0x01, 0x02, 0x03, 0x07, 0x08, 0x1F, 0x7F, 0x00,
+                                       0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00 });
+            body.AddRange(Encoding.GetEncoding(936).GetBytes("旧版WPS文档内容示例第一段落"));
+            body.AddRange(new byte[] { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                                       0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F });
+            body.AddRange(Encoding.GetEncoding(936).GetBytes("预算数字12345结尾"));
+            body.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 });
+            return BuildOle2(
+                new KeyValuePair<string, byte[]>("WPS", body.ToArray()),
+                new KeyValuePair<string, byte[]>("Padding", new byte[64]));
+        }
+
+        private static void WriteLe32(byte[] buf, int off, uint v)
+        {
+            buf[off] = (byte)(v & 0xFF);
+            buf[off + 1] = (byte)((v >> 8) & 0xFF);
+            buf[off + 2] = (byte)((v >> 16) & 0xFF);
+            buf[off + 3] = (byte)((v >> 24) & 0xFF);
+        }
+
+        private static string ExtractOle2(Ole2Extractor extractor, byte[] bytes, out string error)
+        {
+            string text;
+            using (MemoryStream ms = new MemoryStream(bytes))
+            {
+                if (!extractor.TryExtract(ms, 1024 * 1024, out text, out error))
+                {
+                    throw new IOException("OLE2 提取失败: " + error);
+                }
+            }
+            return text;
+        }
+
+        private static void TestOle2Extractor()
+        {
+            Console.WriteLine("--- Ole2Extractor ---");
+            var extractor = new Ole2Extractor();
+
+            Check(extractor.GetFileTypeLabel(".doc") == "Word" && extractor.GetFileTypeLabel(".wps") == "Word" &&
+                  extractor.GetFileTypeLabel(".xls") == "Excel" && extractor.GetFileTypeLabel(".et") == "Excel" &&
+                  extractor.GetFileTypeLabel(".ppt") == "PPT" && extractor.GetFileTypeLabel(".dps") == "PPT",
+                "OLE2 类型标签映射");
+
+            // .xls（NPOI HSSF）
+            string xlsError;
+            string xlsText = ExtractOle2(extractor, BuildXlsFixture(), out xlsError);
+            Check(xlsText.Contains("部门预算表") && xlsText.Contains("季度支出明细") && xlsText.Contains("12345.5"),
+                "XLS 提取 HSSF 单元格文本（实际：" + Show(xlsText) + "）");
+
+            // .doc（分片表：UTF-16 分片 + 压缩分片）
+            string expectedDoc;
+            byte[] docBytes = BuildDocFixture(out expectedDoc);
+            string docError;
+            string docText = ExtractOle2(extractor, docBytes, out docError);
+            Check(docText.Replace("\n", "") == expectedDoc.Replace("\n", "") &&
+                  docText.Contains("合同编号：HT-2024-001。\n甲方：北京示例科技有限公司。"),
+                "DOC 分片表提取（UTF-16 分片 + \\r 转换，实际：" + Show(docText) + "）");
+            Check(docText.Contains("REPORT-2024"), "DOC 8 位压缩分片解码");
+
+            // 加密 .doc 明确报错
+            string encText, encError;
+            using (MemoryStream ms = new MemoryStream(BuildEncryptedDocFixture()))
+            {
+                bool ok = extractor.TryExtract(ms, 1024 * 1024, out encText, out encError);
+                Check(!ok && encError != null && encError.Contains("加密"), "加密 DOC 明确报错（实际：" + encError + "）");
+            }
+
+            // .ppt（TextCharsAtom + TextBytesAtom）
+            string expectedChars, expectedBytes;
+            byte[] pptBytes = BuildPptFixture(out expectedChars, out expectedBytes);
+            string pptError;
+            string pptText = ExtractOle2(extractor, pptBytes, out pptError);
+            Check(pptText.Contains(expectedChars) && pptText.Contains(expectedBytes),
+                "PPT 记录树扫描文本原子（实际：" + Show(pptText) + "）");
+
+            // .wps 旧版 OLE2（启发式挖掘）
+            string wpsError;
+            string wpsText = ExtractOle2(extractor, BuildWpsMiningFixture(), out wpsError);
+            Check(wpsText.Contains("旧版WPS文档内容示例") && wpsText.Contains("第一段落"),
+                "WPS 挖掘提取 UTF-16/GBK 混排文本（实际：" + Show(wpsText) + "）");
+            Check(wpsText.Contains("预算数字12345"), "WPS 挖掘第二个片段");
+
+            // 路由链：.wps 先 OOXML 失败后 OLE2 成功；.doc 直接 OLE2
+            var router = new FormatRouter(new ITextExtractor[] { new OoxmlExtractor(), extractor });
+            string chainText, chainError;
+            using (MemoryStream ms = new MemoryStream(BuildWpsMiningFixture()))
+            {
+                bool ok = router.TryExtractText(".wps", ms, 1024 * 1024, out chainText, out chainError);
+                Check(ok && chainText.Contains("旧版WPS文档内容示例"), "路由链：OLE2 结构 .wps 降级到 OLE2 提取器");
+            }
+            using (MemoryStream ms = new MemoryStream(docBytes))
+            {
+                bool ok = router.TryExtractText(".doc", ms, 1024 * 1024, out chainText, out chainError);
+                Check(ok && chainText.Contains("合同编号"), "路由链：.doc 提取");
+            }
+        }
+
+        // ---------- OFD 提取 ----------
+
+        private static string BuildOfdPageXml(string[] texts)
+        {
+            var sb = new StringBuilder();
+            sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+            sb.Append("<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:Content>");
+            foreach (string t in texts)
+            {
+                sb.Append("<ofd:TextObject Boundary=\"10 10 100 20\"><ofd:TextCode>").Append(t).Append("</ofd:TextCode></ofd:TextObject>");
+            }
+            sb.Append("</ofd:Content></ofd:Page>");
+            return sb.ToString();
+        }
+
+        private static byte[] BuildOfdFixture()
+        {
+            var ofd = new TestZipWriter();
+            ofd.Add("OFD.xml", "<ofd:OFDDocRoot xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocRoot DocBase=\"Doc_0\"/></ofd:OFDDocRoot>", false);
+            ofd.Add("Doc_0/Document.xml", "<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:Page ID=\"1\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Document>", false);
+            ofd.Add("Doc_0/Pages/Page_0/Content.xml", BuildOfdPageXml(new[] { "北京示例科技有限公司", "电子公文内容页" }), true);
+            ofd.Add("Doc_0/Pages/Page_1/Content.xml", BuildOfdPageXml(new[] { "第二页签批内容" }), true);
+            return ofd.Build();
+        }
+
+        private static void TestOfdExtractor()
+        {
+            Console.WriteLine("--- OfdExtractor ---");
+            var extractor = new OfdExtractor();
+            string text, error;
+            using (MemoryStream ms = new MemoryStream(BuildOfdFixture()))
+            {
+                bool ok = extractor.TryExtract(ms, 1024 * 1024, out text, out error);
+                Check(ok && text != null, "OFD 提取成功（错误：" + error + "）");
+            }
+            Check(text.Contains("北京示例科技有限公司") && text.Contains("电子公文内容页"),
+                "OFD TextCode 文本提取（实际：" + Show(text) + "）");
+            int p0 = text.IndexOf("电子公文内容页", StringComparison.Ordinal);
+            int p1 = text.IndexOf("第二页签批内容", StringComparison.Ordinal);
+            Check(p0 >= 0 && p1 > p0, "OFD 按页序提取");
+
+            // 非 OFD 的 ZIP 报结构不符
+            var junk = new TestZipWriter();
+            junk.Add("readme.txt", "hello", false);
+            using (MemoryStream ms = new MemoryStream(junk.Build()))
+            {
+                bool ok = extractor.TryExtract(ms, 1024 * 1024, out text, out error);
+                Check(!ok && error.Contains("OFD"), "非 OFD 的 ZIP 报结构不符（实际：" + error + "）");
+            }
+        }
+
+        // ---------- 压缩包穿透 ----------
+
+        private static byte[] BuildSimpleDocx(string text)
+        {
+            var docx = new TestZipWriter();
+            docx.Add("[Content_Types].xml", "<Types/>", false);
+            docx.Add("word/document.xml",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>" +
+                text + "</w:t></w:r></w:p></w:body></w:document>", true);
+            return docx.Build();
+        }
+
+        private static FormatRouter BuildFullRouter(out ZipArchiveExtractor zipExtractor)
+        {
+            zipExtractor = new ZipArchiveExtractor();
+            var router = new FormatRouter(new ITextExtractor[]
+            {
+                new OoxmlExtractor(), new Ole2Extractor(), new OfdExtractor(),
+                new PdfiumExtractor(), zipExtractor, new TextFileExtractor()
+            });
+            zipExtractor.InnerRouter = router;
+            return router;
+        }
+
+        private static void TestZipPenetration()
+        {
+            Console.WriteLine("--- ZipArchiveExtractor ---");
+            ZipArchiveExtractor zipExtractor;
+            FormatRouter router = BuildFullRouter(out zipExtractor);
+
+            // 外层压缩包：文本 + OOXML + 嵌套压缩包 + 未知类型 + 系统垃圾条目
+            var nested = new TestZipWriter();
+            nested.Add("n.txt", "嵌套压缩包穿透成功", true);
+            var outer = new TestZipWriter();
+            outer.Add("说明.txt", "压缩包内部文本检索测试", true);
+            outer.Add("docs/inner.docx", BuildSimpleDocx("压缩包里的项目计划书"), true);
+            outer.Add("nested.zip", nested.Build(), false);
+            outer.Add("img.bin", new byte[] { 1, 2, 3, 4, 5 }, false);
+            outer.Add("__MACOSX/._说明.txt", "junk", false);
+            byte[] zipBytes = outer.Build();
+
+            string text, error;
+            using (MemoryStream ms = new MemoryStream(zipBytes))
+            {
+                bool ok = zipExtractor.TryExtract(ms, 1024 * 1024, out text, out error);
+                Check(ok && text != null, "压缩包穿透提取成功（错误：" + error + "）");
+            }
+            Check(text.Contains("说明.txt ──") && text.Contains("压缩包内部文本检索测试"), "穿透：条目名行与文本内容");
+            Check(text.Contains("docs/inner.docx ──") && text.Contains("压缩包里的项目计划书"), "穿透：内部 OOXML 内容提取");
+            Check(text.Contains("nested.zip ──") && text.Contains("嵌套压缩包穿透成功"), "穿透：嵌套压缩包递归");
+            Check(text.Contains("img.bin ──"), "穿透：不可提取条目仅保留名字行");
+            Check(!text.Contains("__MACOSX"), "穿透：跳过 __MACOSX 系统条目");
+
+            // 嵌套层数限制：3 层内可穿透，第 4 层仅保留名字行
+            var l4 = new TestZipWriter();
+            l4.Add("l4.txt", "第四层内容不可穿透", true);
+            var l3 = new TestZipWriter();
+            l3.Add("l3.txt", "第三层内容可穿透", true);
+            l3.Add("level4.zip", l4.Build(), false);
+            var l2 = new TestZipWriter();
+            l2.Add("level3.zip", l3.Build(), false);
+            var l1 = new TestZipWriter();
+            l1.Add("level2.zip", l2.Build(), false);
+
+            using (MemoryStream ms = new MemoryStream(l1.Build()))
+            {
+                string t2, err2;
+                zipExtractor.TryExtract(ms, 1024 * 1024, out t2, out err2);
+                Check(t2.Contains("第三层内容可穿透"), "穿透：第 3 层内容可见");
+                Check(t2.Contains("level4.zip ──") && !t2.Contains("第四层内容不可穿透"),
+                    "穿透：超过层数上限仅保留名字行");
+            }
+
+            // 损坏 ZIP 报错
+            using (MemoryStream ms = new MemoryStream(new byte[] { 1, 2, 3, 4 }))
+            {
+                string t3, err3;
+                bool ok = zipExtractor.TryExtract(ms, 1024 * 1024, out t3, out err3);
+                Check(!ok && !string.IsNullOrEmpty(err3), "损坏 ZIP 报错");
+            }
+
+            // 全链路：router.TryExtractText(".zip") 穿透后内层 docx 命中
+            string chainText, chainError;
+            using (MemoryStream ms = new MemoryStream(zipBytes))
+            {
+                bool ok = router.TryExtractText(".zip", ms, 1024 * 1024, out chainText, out chainError);
+                Check(ok && chainText.Contains("压缩包里的项目计划书"), "路由链：.zip 穿透 + 内部 OOXML 链式提取");
+            }
+        }
+
+        // ---------- PDF（pdfium，优雅降级） ----------
+
+        private static void TestPdfiumExtractor()
+        {
+            Console.WriteLine("--- PdfiumExtractor ---");
+            var extractor = new PdfiumExtractor();
+            Check(extractor.GetFileTypeLabel(".pdf") == "PDF", "PDF 类型标签");
+
+            // 非 PDF 头直接拒绝（不依赖原生库）
+            string text, error;
+            using (MemoryStream ms = new MemoryStream(Encoding.ASCII.GetBytes("PK\x03\x04 not a pdf")))
+            {
+                bool ok = extractor.TryExtract(ms, 1024 * 1024, out text, out error);
+                Check(!ok && error.Contains("非 PDF"), "非 PDF 文件被拒（实际：" + error + "）");
+            }
+
+            // 合法 PDF 头：无 pdfium.dll 时优雅降级（错误提示部署方式）；有 pdfium 时解析失败也返回明确错误
+            var pdf = new MemoryStream();
+            byte[] head = Encoding.ASCII.GetBytes("%PDF-1.4\n1 0 obj\nendobj\n%%EOF");
+            pdf.Write(head, 0, head.Length);
+            pdf.Position = 0;
+            bool pdfOk = extractor.TryExtract(pdf, 1024 * 1024, out text, out error);
+            Check(!pdfOk && !string.IsNullOrEmpty(error) &&
+                      (error.Contains("pdfium.dll") || error.Contains("PDF 解析失败")),
+                "PDF 无原生库时优雅降级并给出部署提示（实际：" + error + "）");
+        }
+
+        // ---------- 摘要与高亮 ----------
+
+        private static void TestSnippetBuilder()
+        {
+            Console.WriteLine("--- SnippetBuilder ---");
+            List<string> terms = SnippetBuilder.ExtractTerms("敏感信息 ABC-12 采购");
+            Check(terms.Count == 4 && terms[0] == "敏感信息" && terms[1] == "abc" && terms[2] == "12" && terms[3] == "采购",
+                "高亮词提取（连续片段 + 小写化，实际：" + string.Join("|", terms.ToArray()) + "）");
+
+            string longText = new string('前', 200) + "关键词出现位置在中间这一段" + new string('后', 200);
+            string snip = SnippetBuilder.Build(longText, new List<string> { "关键词" });
+            Check(snip.Contains("关键词") && snip.StartsWith("…") && snip.EndsWith("…") && snip.Length <= 200,
+                "摘要窗口与省略号（长度 " + snip.Length + "）");
+
+            string snip2 = SnippetBuilder.Build("短文本带关键词", new List<string> { "关键词" });
+            Check(snip2 == "短文本带关键词", "短文本摘要不加省略号");
+
+            Check(SnippetBuilder.Build("没有命中内容", new List<string> { "关键词" }) == string.Empty,
+                "无命中返回空摘要");
+            Check(SnippetBuilder.Build("A\n\t B  测试", new List<string> { "a" }).StartsWith("A B"),
+                "空白折叠（大小写不敏感命中、原文截取）");
+
+            // TryMake：重读文件生成摘要
+            string root = Path.Combine(Path.GetTempPath(), "DocSnifferSnippetTest_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            try
+            {
+                Directory.CreateDirectory(root);
+                string file = Path.Combine(root, "note.txt");
+                File.WriteAllBytes(file, new UTF8Encoding(false).GetBytes("会议纪要：关于文档检索工具的立项说明。"));
+
+                ZipArchiveExtractor zipExtractor;
+                FormatRouter router = BuildFullRouter(out zipExtractor);
+                string made = SnippetBuilder.TryMake(router, file, "检索工具");
+                Check(made.Contains("文档检索工具") && made.Contains("立项"), "TryMake 重读文件生成摘要（实际：" + made + "）");
+
+                Check(SnippetBuilder.TryMake(router, Path.Combine(root, "missing.txt"), "检索") == string.Empty,
+                    "文件不存在返回空摘要");
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch (Exception) { }
+            }
+        }
+
         // ---------- 扫描 + 路由 + 索引 + 增量 ----------
 
         private static void TestPipelineAndIndex()
@@ -318,16 +759,34 @@ namespace DocSnifferLegacy.Tests
                 pptx.Add("ppt/slides/slide1.xml", BuildSlideXml(), true);
                 File.WriteAllBytes(Path.Combine(root, "deck1.pptx"), pptx.Build());
 
-                var router = new FormatRouter(new ITextExtractor[] { new OoxmlExtractor(), new TextFileExtractor() });
+                // OLE2 族
+                string expectedDocText;
+                File.WriteAllBytes(Path.Combine(root, "合同.doc"), BuildDocFixture(out expectedDocText));
+                string pptChars, pptBytes;
+                File.WriteAllBytes(Path.Combine(root, "演示.ppt"), BuildPptFixture(out pptChars, out pptBytes));
+                File.WriteAllBytes(Path.Combine(root, "表.xls"), BuildXlsFixture());
+                File.WriteAllBytes(Path.Combine(root, "老文档.wps"), BuildWpsMiningFixture()); // OLE2 结构 .wps
+
+                // OFD
+                File.WriteAllBytes(Path.Combine(root, "单据.ofd"), BuildOfdFixture());
+
+                // 压缩包穿透（内含文本 + OOXML）
+                var innerZip = new TestZipWriter();
+                innerZip.Add("说明.txt", "压缩包内员工花名册内容", true);
+                innerZip.Add("report.docx", BuildSimpleDocx("压缩包里的工作总结报告"), true);
+                File.WriteAllBytes(Path.Combine(root, "inner.zip"), innerZip.Build());
+
+                ZipArchiveExtractor unusedZip;
+                var router = BuildFullRouter(out unusedZip);
                 using (var service = new LuceneIndexService(indexDir))
                 {
                     List<FileRecord> files = FileScanner.Scan(root, router.AllExtensions, null, null);
-                    Check(files.Count == 7, "扫描到 7 个文件（实际 " + files.Count + "）");
+                    Check(files.Count == 13, "扫描到 13 个文件（实际 " + files.Count + "）");
 
                     IndexRunStats stats = service.IndexFiles(files, true, "b1", true, router, null, null, 200, 1024 * 1024, 50 * 1024 * 1024);
-                    Check(stats.Added == 7 && stats.Failed == 0,
-                        "全量索引：新增7/失败0（实际 新增" + stats.Added + "/失败" + stats.Failed + "）");
-                    Check(stats.TotalDocs == 7, "文档总数 = 7（实际 " + stats.TotalDocs + "）");
+                    Check(stats.Added == 13 && stats.Failed == 0,
+                        "全量索引：新增13/失败0（实际 新增" + stats.Added + "/失败" + stats.Failed + "）");
+                    Check(stats.TotalDocs == 13, "文档总数 = 13（实际 " + stats.TotalDocs + "）");
 
                     Check(HasHit(service.Search("检索", 50, null), "a.txt"), "搜'检索'命中 a.txt");
                     Check(HasHit(service.Search("财务报表", 50, null), "b.txt"), "搜'财务报表'命中 GBK 文件 b.txt");
@@ -337,6 +796,23 @@ namespace DocSnifferLegacy.Tests
                     Check(HasHit(service.Search("预算表", 50, null), "sheet1.xlsx"), "搜'预算表'命中 xlsx 共享字符串");
                     Check(HasHit(service.Search("年度总结", 50, null), "deck1.pptx"), "搜'年度总结'命中 pptx");
                     Check(service.Search("不存在的词组", 50, null).Count == 0, "不存在的词组无结果");
+
+                    // 新格式：OLE2 / OFD / 压缩包穿透
+                    Check(HasHit(service.Search("合同编号", 50, null), "合同.doc"), "搜'合同编号'命中 OLE2 .doc（分片表解析）");
+                    Check(HasHit(service.Search("评审会", 50, null), "演示.ppt"), "搜'评审会'命中 OLE2 .ppt");
+                    Check(HasHit(service.Search("支出明细", 50, null), "表.xls"), "搜'支出明细'命中 OLE2 .xls");
+                    Check(HasHit(service.Search("签批内容", 50, null), "单据.ofd"), "搜'签批内容'命中 OFD");
+                    Check(HasHit(service.Search("文档内容", 50, null), "老文档.wps"), "搜'文档内容'命中 OLE2 旧版 .wps（启发式挖掘）");
+                    Check(HasHit(service.Search("花名册", 50, null), "inner.zip"), "搜'花名册'命中压缩包穿透文本");
+                    Check(HasHit(service.Search("工作总结", 50, null), "inner.zip"), "搜'工作总结'命中压缩包内 OOXML");
+
+                    // 类型标签
+                    IList<SearchResultItem> labelHits = service.Search("合同编号", 50, null);
+                    Check(labelHits.Count == 1 && labelHits[0].FileType == "Word", "OLE2 .doc 类型标签 = Word");
+                    labelHits = service.Search("签批内容", 50, null);
+                    Check(labelHits.Count == 1 && labelHits[0].FileType == "OFD", "OFD 类型标签 = OFD");
+                    labelHits = service.Search("花名册", 50, null);
+                    Check(labelHits.Count == 1 && labelHits[0].FileType == "压缩包", "压缩包类型标签 = 压缩包");
 
                     // 大小/修改时间/类型字段（用 a.txt 独有的词，避免多文件命中的排序干扰）
                     IList<SearchResultItem> hits = service.Search("引擎测试", 50, null);
@@ -348,8 +824,8 @@ namespace DocSnifferLegacy.Tests
                     File.WriteAllBytes(Path.Combine(root, "b.txt"), Encoding.GetEncoding(936).GetBytes("公开信息：年会通知安排"));
                     files = FileScanner.Scan(root, router.AllExtensions, null, null);
                     stats = service.IndexFiles(files, false, "b1", true, router, null, null, 200, 1024 * 1024, 50 * 1024 * 1024);
-                    Check(stats.Updated == 1 && stats.Skipped == 6 && stats.Added == 0,
-                        "增量索引：更新1/跳过6（实际 更新" + stats.Updated + "/跳过" + stats.Skipped + "/新增" + stats.Added + "）");
+                    Check(stats.Updated == 1 && stats.Skipped == 12 && stats.Added == 0,
+                        "增量索引：更新1/跳过12（实际 更新" + stats.Updated + "/跳过" + stats.Skipped + "/新增" + stats.Added + "）");
                     Check(HasHit(service.Search("年会通知", 50, null), "b.txt"), "修改后新内容可搜");
                     Check(service.Search("财务报表", 50, null).Count == 0, "修改后旧内容不再命中");
 
@@ -378,7 +854,7 @@ namespace DocSnifferLegacy.Tests
                     File.WriteAllBytes(Path.Combine(root, "bad.docx"), new byte[] { 0x50, 0x4B, 0x03, 0x04, 0x00, 0x00 });
                     files = FileScanner.Scan(root, router.AllExtensions, null, null);
                     stats = service.IndexFiles(files, false, "b1", true, router, null, null, 200, 1024 * 1024, 50 * 1024 * 1024);
-                    Check(stats.Failed == 1 && stats.Errors.Count >= 1 && stats.TotalDocs == 7,
+                    Check(stats.Failed == 1 && stats.Errors.Count >= 1 && stats.TotalDocs == 13,
                         "损坏 docx 提取失败被记录且不入索引（失败 " + stats.Failed + "，文档 " + stats.TotalDocs + "）");
                     Check(service.Search("bad", 50, null).Count == 0, "损坏文件完全不入索引（文件名也不命中）");
 
@@ -386,14 +862,14 @@ namespace DocSnifferLegacy.Tests
                     Check(HasHit(service.Search("sheet1", 50, null), "sheet1.xlsx"), "按文件名检索");
 
                     // ---- 批次：范围过滤 ----
-                    Check(service.DocCountForBatch("b1") == 7, "批次 b1 文档数 = 7（实际 " + service.DocCountForBatch("b1") + "）");
+                    Check(service.DocCountForBatch("b1") == 13, "批次 b1 文档数 = 13（实际 " + service.DocCountForBatch("b1") + "）");
                     Check(HasHit(service.Search("检索", 50, "b1"), "a.txt"), "限定批次检索命中");
                     Check(service.Search("检索", 50, "b_none").Count == 0, "不存在批次范围为空");
 
                     // ---- 批次：重新导入归属新批次（同一路径以最后一次扫描为准）----
                     files = FileScanner.Scan(root, router.AllExtensions, null, null);
                     stats = service.IndexFiles(files, false, "b2", true, router, null, null, 200, 1024 * 1024, 50 * 1024 * 1024);
-                    Check(service.DocCountForBatch("b2") == 7 && service.DocCountForBatch("b1") == 0,
+                    Check(service.DocCountForBatch("b2") == 13 && service.DocCountForBatch("b1") == 0,
                         "重新导入归属新批次（b2=" + service.DocCountForBatch("b2") + ", b1=" + service.DocCountForBatch("b1") + "）");
 
                     // ---- 批次：删除 ----
@@ -403,7 +879,7 @@ namespace DocSnifferLegacy.Tests
                     // ---- 仅索引文件名 ----
                     files = FileScanner.Scan(root, router.AllExtensions, null, null);
                     stats = service.IndexFiles(files, true, "b3", false, router, null, null, 200, 1024 * 1024, 50 * 1024 * 1024);
-                    Check(stats.Added == 8, "仅文件名模式全量入库（含此前提取失败的文件，实际 " + stats.Added + "）");
+                    Check(stats.Added == 14, "仅文件名模式全量入库（含此前提取失败的文件，实际 " + stats.Added + "）");
                     Check(service.Search("检索", 50, null).Count == 0, "仅文件名模式下内容不命中");
                     Check(HasHit(service.Search("sheet1", 50, null), "sheet1.xlsx"), "仅文件名模式下文件名可搜");
 

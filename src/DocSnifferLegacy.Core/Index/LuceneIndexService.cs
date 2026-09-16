@@ -49,6 +49,8 @@ namespace DocSnifferLegacy.Core.Index
         public long Size;
         public DateTime Modified;
         public float Score;
+        /// <summary>命中内容摘要（重读文件生成，可能为空）。</summary>
+        public string Snippet;
     }
 
     /// <summary>
@@ -280,15 +282,15 @@ namespace DocSnifferLegacy.Core.Index
         {
             string text = string.Empty;
             string label = "其他";
-            ITextExtractor extractor = router.Route(f.Extension);
+            IList<ITextExtractor> chain = router != null ? router.RouteAll(f.Extension) : null;
 
             if (!includeContent)
             {
                 // 仅索引文件名
             }
-            else if (extractor != null)
+            else if (chain != null && chain.Count > 0)
             {
-                label = extractor.GetFileTypeLabel(f.Extension);
+                label = chain[0].GetFileTypeLabel(f.Extension);
                 if (f.Length > maxFileBytes)
                 {
                     // 超大文件仅索引文件名（风险表策略）
@@ -303,7 +305,7 @@ namespace DocSnifferLegacy.Core.Index
                         {
                             string error;
                             string extracted;
-                            if (extractor.TryExtract(fs, maxChars, out extracted, out error))
+                            if (router.TryExtractText(f.Extension, fs, maxChars, out extracted, out error))
                             {
                                 text = extracted ?? string.Empty;
                             }

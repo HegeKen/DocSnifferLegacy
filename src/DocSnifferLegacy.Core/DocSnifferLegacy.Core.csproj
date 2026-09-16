@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <PackageReference Include="Lucene.Net" Version="3.0.3" />
+    <!-- OLE2 容器与 .xls 解析；2.4.1 是最后一个提供 net40 目标（依赖 SharpZipLib 0.86.0，与 Lucene.Net 一致）的版本 -->
+    <PackageReference Include="NPOI" Version="2.4.1" />
   </ItemGroup>
 
 </Project>

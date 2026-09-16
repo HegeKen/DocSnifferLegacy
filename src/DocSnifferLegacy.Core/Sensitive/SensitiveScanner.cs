@@ -95,8 +95,9 @@ namespace DocSnifferLegacy.Core.Sensitive
             }
 
             if (!includeContent) return;
-            ITextExtractor extractor = router != null ? router.Route((Path.GetExtension(fullPath) ?? string.Empty).ToLowerInvariant()) : null;
-            if (extractor == null) return;
+            if (router == null) return;
+            string ext = (Path.GetExtension(fullPath) ?? string.Empty).ToLowerInvariant();
+            if (router.RouteAll(ext).Count == 0) return;
             if (new FileInfo(fullPath).Length > maxFileBytes) return;
 
             string text;
@@ -105,7 +106,7 @@ namespace DocSnifferLegacy.Core.Sensitive
             {
                 using (FileStream fs = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
-                    if (!extractor.TryExtract(fs, maxChars, out text, out error)) return;
+                    if (!router.TryExtractText(ext, fs, maxChars, out text, out error)) return;
                 }
             }
             catch (Exception)

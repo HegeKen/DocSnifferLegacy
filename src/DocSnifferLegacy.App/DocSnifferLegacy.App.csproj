@@ -23,9 +23,9 @@
     <PackageReference Include="ILRepack" Version="2.0.48" PrivateAssets="all" />
   </ItemGroup>
 
-  <!-- Release 构建后将 Core/Lucene.Net/SharpZipLib 合并进单一 exe，输出到 bin/.../net40/publish/ -->
+  <!-- Release 构建后将 Core/Lucene.Net/SharpZipLib/NPOI 合并进单一 exe，输出到 bin/.../net40/publish/ -->
   <Target Name="MergeToSingleFile" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'"
-          Inputs="$(TargetPath);$(OutputPath)DocSnifferLegacy.Core.dll;$(OutputPath)Lucene.Net.dll;$(OutputPath)ICSharpCode.SharpZipLib.dll"
+          Inputs="$(TargetPath);$(OutputPath)DocSnifferLegacy.Core.dll;$(OutputPath)Lucene.Net.dll;$(OutputPath)ICSharpCode.SharpZipLib.dll;$(OutputPath)NPOI.dll"
           Outputs="$(OutputPath)publish/$(AssemblyName).exe">
     <PropertyGroup>
       <!-- 路径必须在 Target 内求值：顶层处 $(OutputPath) 尚未被 SDK 赋值 -->
@@ -35,7 +35,7 @@
       <_DotNetHost Condition="'$(_DotNetHost)' == ''">dotnet</_DotNetHost>
     </PropertyGroup>
     <MakeDir Directories="$(OutputPath)publish" />
-    <Exec Command="&quot;$(_DotNetHost)&quot; &quot;$(PkgILRepack)/tools/ILRepack.exe&quot; /internalize /ndebug /out:&quot;$(SingleFileExe)&quot; /lib:&quot;$(NetFxRefAssemblies)&quot; &quot;$(TargetPath)&quot; &quot;$(OutputPath)DocSnifferLegacy.Core.dll&quot; &quot;$(OutputPath)Lucene.Net.dll&quot; &quot;$(OutputPath)ICSharpCode.SharpZipLib.dll&quot;" />
+    <Exec Command="&quot;$(_DotNetHost)&quot; &quot;$(PkgILRepack)/tools/ILRepack.exe&quot; /internalize /ndebug /out:&quot;$(SingleFileExe)&quot; /lib:&quot;$(NetFxRefAssemblies)&quot; &quot;$(TargetPath)&quot; &quot;$(OutputPath)DocSnifferLegacy.Core.dll&quot; &quot;$(OutputPath)Lucene.Net.dll&quot; &quot;$(OutputPath)ICSharpCode.SharpZipLib.dll&quot; &quot;$(OutputPath)NPOI.dll&quot;" />
     <Delete Files="$(OutputPath)publish/$(AssemblyName).exe.config" />
     <Message Importance="high" Text="单文件发布: $(SingleFileExe)" />
   </Target>

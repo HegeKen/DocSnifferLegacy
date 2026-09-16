@@ -25,6 +25,8 @@ namespace DocSnifferLegacy.App
         public static readonly Color RiskMedium = Color.FromArgb(0xD9, 0x77, 0x06);
         public static readonly Color RiskHigh = Color.FromArgb(0xDC, 0x26, 0x26);
         public static readonly Color RiskCritical = Color.FromArgb(0x7F, 0x1D, 0x1D);
+        /// <summary>搜索预览中的关键词高亮底色（浅琥珀）。</summary>
+        public static readonly Color Highlight = Color.FromArgb(0xFD, 0xE6, 0x8A);
 
         public static readonly Font Title;
         public static readonly Font Body;

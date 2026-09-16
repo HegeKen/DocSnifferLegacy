@@ -25,7 +25,19 @@ namespace DocSnifferLegacy.App
         public AppServices()
         {
             Settings = AppSettings.Load();
-            Router = new FormatRouter(new ITextExtractor[] { new OoxmlExtractor(), new TextFileExtractor() });
+            ZipArchiveExtractor zipExtractor = new ZipArchiveExtractor();
+            // 路由顺序即优先级：OOXML 在前（PK 结构的 .wps 优先按 OOXML 解析），OLE2 兜底旧版 WPS/DOC 系，
+            // ZipArchiveExtractor 穿透压缩包（需要引用路由器自身，构建完成后注入）。
+            Router = new FormatRouter(new ITextExtractor[]
+            {
+                new OoxmlExtractor(),
+                new Ole2Extractor(),
+                new OfdExtractor(),
+                new PdfiumExtractor(),
+                zipExtractor,
+                new TextFileExtractor()
+            });
+            zipExtractor.InnerRouter = Router;
             Index = new LuceneIndexService(
                 string.IsNullOrEmpty(Settings.IndexDirectory) ? AppSettings.DefaultIndexPath : Settings.IndexDirectory);
             Batches = BatchStore.Load(System.IO.Path.Combine(AppSettings.BaseDirectory, "batches.xml"));
